@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # Arch Install Script
-# by jonatasmedeiros
+# by Jonatas Medeiros
 # License: GNU GPLv3
 
 # array funcs {{{
@@ -125,10 +125,22 @@ print_title()
     echo
 }
 
-print_info()
+print_header()
 {
     T_COLS=`tput cols`
     echo "${Bold}$1${Reset}" | fold -sw $(( $T_COLS - 18 )) | sed 's/^/\t/'
+    echo
+}
+
+print_bold()
+{
+    echo "${Bold}$1${Reset}"
+    echo
+}
+
+print_info()
+{
+    echo "${BBlue}$1${Reset}"
     echo
 }
 
@@ -183,156 +195,191 @@ pause_function()
         continue_key=$(read_key 30)
     fi
     echo
+    echo
 }
 
 invalid_option()
 {
-    print_line
-    echo "Invalid option. Try another one."
+    print_warning "Invalid option. Try another one."
     pause_function
 }
+
+check_for_valid_input()
+{
+    case $1 in
+        *[!0-9]*|'')
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
 #}}}
 
-# test connection {{{
-connection_test()
+check_connection() #{{{
 {
-    ping -q -w 1 -c 1 `ip r | grep default | awk 'NR==1 {print $3}'` >/dev/null 2>&1 && return 1 || return 0
-}
+    while true # will exit when: ping is successfull, or user chooses option 3(Skip), or ping fails 3 times
+    do
+        XPINGS=$(($XPINGS + 1))
+        WIRED_DEV=`ip link | grep "ens\|eno\|enp" | awk '{print $2}'| sed 's/://' | sed '1!d'`
+        WIRELESS_DEV=`ip link | grep wlp | awk '{print $2}'| sed 's/://' | sed '1!d'`
 
-check_connection()
-{
-    XPINGS=$(( $XPINGS + 1 ))
-
-    WIRED_DEV=`ip link | grep "ens\|eno\|enp" | awk '{print $2}'| sed 's/://' | sed '1!d'`
-    WIRELESS_DEV=`ip link | grep wlp | awk '{print $2}'| sed 's/://' | sed '1!d'`
-    if connection_test; then
-        while true
-        do
+        if ! ping -q -w 1 -c 1 `ip r | grep default | awk 'NR==1 {print $3}'`; then
             echo
-            print_warning "ERROR! Connection not Found."
-            print_info "Network Setup"
-            _connection_opts=$(array 'Wired Automatic' 'Wireless' 'Skip')
-            array_print_indexed "$_connection_opts"
+            connection_opts=$(array 'Wired Automatic' 'Wireless' 'Skip')
+            while true # will exit when: user inputs valid option
+            do
+                print_warning "ERROR! Connection not Found."
+                print_header ":: Network Setup ::"
+                array_print_indexed "$connection_opts"
+                echo
+                printf "$prompt1"
+                read choice
+                echo
+                case "$choice" in
+                    1)
+                        systemctl start dhcpcd@${WIRED_DEV}.service
+                        break
+                        ;;
+                    2)
+                        wifi-menu ${WIRELESS_DEV}
+                        break
+                        ;;
+                    3)
+                        break
+                        ;;
+                    *)
+                        invalid_option
+                        ;;
+                esac
+            done
+            if [ $XPINGS -gt 2 ]; then
+                echo
+                print_warning "Can't establish connection. exiting..."
+                exit 1
+            fi
+            [ $choice -eq 3 ] && break
+        else
             echo
-            printf "$prompt1"
-            read choice
-            case "$choice" in
-                1)
-                    systemctl start dhcpcd@${WIRED_DEV}.service
-                    break
-                    ;;
-                2)
-                    wifi-menu ${WIRELESS_DEV}
-                    break
-                    ;;
-                3)
-                    break
-                    ;;
-                *)
-                    invalid_option
-                    ;;
-            esac
-        done
-        if [ $XPINGS -gt 2 ]; then
-            print_warning "Can't establish connection. exiting..."
-            exit 1
+            print_info "Connected!"
+            break
         fi
-        [ $choice -ne 3 ] && check_connection
-    fi
-}
-#}}}
+    done
+} #}}}
 
 check_trim() #{{{
 {
-    [ -n $(hdparm -I /dev/sda | grep TRIM 2> /dev/null) ] && TRIM=1
+    if [ -n "$(hdparm -I /dev/sda | grep TRIM)" ]; then
+        TRIM=1
+        echo
+        print_info "Trimming supported!"
+    else
+        echo
+        print_info "Trimming not supported!"
+    fi
 } #}}}
 
 select_keymap() #{{{
 {
     number_of_options=$(echo "$keymap_list" | array_len)
-    while true
+    while true # will exit when user inputs valid option
     do
         print_title "KEYMAP - https://wiki.archlinux.org/index.php/KEYMAP"
-        print_info "The KEYMAP variable is specified in the /etc/rc.conf file. It defines what keymap the keyboard is in the virtual consoles. Keytable files are provided by the kbd package."
+        print_header "The KEYMAP variable is specified in the /etc/rc.conf file. It defines what keymap the keyboard is in the virtual consoles. Keytable files are provided by the kbd package."
 
         echo "List of keymaps:"
+        echo
         array_print_indexed "$keymap_list"
+        echo
+        echo "0) Go back"
         echo
 
         printf "$prompt1"
         read choice
-        if [ $choice -ge 1 -a $choice -le $number_of_options ]; then
-            KEYMAP=$(echo "$keymap_list" | array_nth $((choice - 1)))
-            #loadkeys "$KEYMAP"
-            echo "Selected: $KEYMAP"
-            pause_function
-            break
-        else
-            invalid_option
+        
+        if check_for_valid_input "$choice"; then # input is valid
+            if [ $choice -ge 1 -a $choice -le $number_of_options ]; then
+                KEYMAP=$(echo "$keymap_list" | array_nth $((choice - 1)))
+                loadkeys "$KEYMAP"
+                echo
+                print_info "Selected: $KEYMAP"
+                pause_function
+                break
+            elif [ $choice -eq 0 ]; then
+                break
+            fi
         fi
+        invalid_option
     done
 } #}}}
 
-# mirrorlist config {{{
-choose_country()
+configure_mirrorlist() #{{{
 {
     number_of_options=$(echo "$countries_name" | array_len)
-    while true
+    while true # will exit when user inputs valid option
     do
+        print_title "MIRRORLIST - https://wiki.archlinux.org/index.php/Mirrors"
+        print_header "This option is a guide to selecting and configuring your mirrors, and a listing of current available mirrors."
+
         echo "Select your country:"
+        echo
         array_print_indexed "$countries_name" | column
+        echo
+        echo "0) Go back"
         echo
 
         printf "$prompt1"
         read choice
-        if [ $choice -ge 1 -a $choice -le $number_of_options ]; then
-            country_code="$(echo "$countries_code" | array_nth $((choice - 1)))"
-            country_name="$(echo "$countries_name" | array_nth $((choice - 1)))"
-            break
-        else
-            invalid_option
+        
+        if check_for_valid_input "$choice"; then # input is valid
+            if [ $choice -ge 1 -a $choice -le $number_of_options ]; then
+                country_code="$(echo "$countries_code" | array_nth $((choice - 1)))"
+                country_name="$(echo "$countries_name" | array_nth $((choice - 1)))"
+                print_info "Selected: $country_name ($country_code)"
+                pause_function
+                break
+            elif [ $choice -eq 0 ]; then
+                break
+            fi
         fi
+        invalid_option
     done
-}
 
-configure_mirrorlist()
-{
-
-    print_title "MIRRORLIST - https://wiki.archlinux.org/index.php/Mirrors"
-    print_info "This option is a guide to selecting and configuring your mirrors, and a listing of current available mirrors."
-
-    choose_country
+    [ $choice -eq 0 ] && return
 
     url="https://www.archlinux.org/mirrorlist/?country=${country_code}&use_mirror_status=on"
     tmpfile=$(mktemp --suffix=-mirrorlist)
 
     # Get latest mirror list and save to tmpfile
-    curl -so ${tmpfile} ${url}
+    print_bold ":: Downloading latest mirror list ::"
+    curl -o ${tmpfile} ${url}
+    echo
     sed -i 's/^#Server/Server/g' ${tmpfile}
 
     # Backup and replace current mirrorlist file (if new file is non-zero)
     if [ -s ${tmpfile} ]; then
-        {
-            echo " Backing up the original mirrorlist..."
-            mv -i /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.orig;
-        } &&
-        {
-            echo " Rotating the new list into place..."
-            mv -i ${tmpfile} /etc/pacman.d/mirrorlist;
-        }
+        mv /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.orig &&
+        mv ${tmpfile} /etc/pacman.d/mirrorlist &&
+        print_info "Mirrorlist updated."
     else
-        echo " Unable to update, could not download list."
+        print_warning "Unable to update! Could not download list."
     fi
     
     # better repo should go first
+    print_bold ":: Downloading rankmirrors package ::"
     pacman --noconfirm --needed -S pacman-contrib
+    echo
     cp /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.tmp
+    print_bold ":: Ranking mirrors ::"
     rankmirrors /etc/pacman.d/mirrorlist.tmp > /etc/pacman.d/mirrorlist
     rm /etc/pacman.d/mirrorlist.tmp
     # allow global read access (required for non-root yaourt execution)
     chmod +r /etc/pacman.d/mirrorlist
-    echo "Mirror list:"
+    echo
+    print_bold "Mirror list:"
     cat /etc/pacman.d/mirrorlist
+    echo
     pause_function
 }
 #}}}
@@ -354,11 +401,16 @@ finish() #{{{
 
 # inital checks {{{
 print_title "Arch Install Scripts - by Jonatas Medeiros"
-print_info "The AIS are a custom set of shell scripts that provide a tailored Arch installation."
+print_header "The AIS are a custom set of shell scripts that provide a tailored Arch installation."
 pause_function
+print_bold ":: Checking connection ::"
 check_connection
+print_bold ":: Checking disk ::"
 check_trim
+print_bold ":: Updating repositories ::"
 pacman -Sy
+echo
+pause_function
 #}}}
 
 # main loop {{{
@@ -386,11 +438,11 @@ do
     case "$OPT" in
         1)
             select_keymap
-            checklist=$(array_change "$checklist" 0 "1")
+            [ $choice -ne 0 ] && checklist=$(array_change "$checklist" 0 "1")
             ;;
         2)
             configure_mirrorlist
-            checklist=$(array_change "$checklist" 1 "1")
+            [ $choice -ne 0 ] && checklist=$(array_change "$checklist" 1 "1")
             ;;
         3)
             checklist=$(array_change "$checklist" 2 "1")
