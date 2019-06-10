@@ -221,8 +221,8 @@ generate_fstab()
     printf "\n"
 
     # /mnt/swapfile -> /swapfile
-    print_command "sed -i \"s/\\${mount_point}//\""
-    sed -i "s/\\${mount_point}//"
+    print_command "sed -i \"s/\\${mount_point}//\" ${mount_point}/etc/fstab"
+    sed -i "s/\\${mount_point}//" ${mount_point}/etc/fstab
 
     print_command "cat ${mount_point}/etc/fstab"
     cat ${mount_point}/etc/fstab
@@ -334,6 +334,13 @@ config_bootloader()
     wait_key
 }
 
+finish()
+{
+    umount -R ${mount_point}
+    printf "\n"
+    print_bold ":: Installation finished"
+}
+
 setup()
 {
     print_title "$title"
@@ -354,8 +361,7 @@ setup()
     copy_pacmanconf
     config_bootloader
     set_root_pass
-
-    print_bold "Installation finished."
+    finish
 }
 
 set_defaults
